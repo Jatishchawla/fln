@@ -136,7 +136,12 @@ export async function generateLevelWorksheet({
 
   try {
     const page = await browser.newPage();
-    const htmlPath = path.join(process.cwd(), "public", "worksheets", "levels_main.html");
+    // Worksheet templates live in the frontend package; overridable via env so
+    // the backend can be deployed independently of the frontend source tree.
+    const worksheetAssetsDir =
+      process.env.WORKSHEET_ASSETS_DIR ||
+      path.resolve(__dirname, "..", "..", "frontend", "public", "worksheets");
+    const htmlPath = path.join(worksheetAssetsDir, "levels_main.html");
     await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0', timeout: 30000 });
 
     const data = await page.evaluate(({ levelId, subIdx }) => {

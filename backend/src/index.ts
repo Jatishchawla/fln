@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { dbStore, UserRole, User, Student, School, Question, Worksheet, AnswerSubmission, EvaluationReport, Ticket, LogEntry, Announcement } from './db';
 import { generateAIDiagnostic, evaluateAIDiagnostic, generateAIPersonalizedWorksheet, evaluateAIWorksheet } from './gemini';
 import { generateDiagnosticPaper } from './paperGenerator';
@@ -13,6 +12,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+// Worksheet HTML templates live in the frontend package (they are also served
+// to the browser). The backend reads them for Puppeteer PDF rendering.
+// Overridable so the two packages can be deployed independently.
+const WORKSHEET_ASSETS_DIR =
+  process.env.WORKSHEET_ASSETS_DIR ||
+  path.resolve(ROOT_DIR, '..', 'frontend', 'public', 'worksheets');
+
 async function startServer() {
   // Initialize file-based DB
   await dbStore.init();
@@ -22,7 +28,7 @@ async function startServer() {
 
   // Serve Puppeteer output PDF sheets statically
   app.use('/output', express.static(path.join(ROOT_DIR, 'output')));
-  app.use('/worksheets', express.static(path.join(ROOT_DIR, 'public', 'worksheets')));
+  app.use('/worksheets', express.static(WORKSHEET_ASSETS_DIR));
   // --- Auth Middleware & Helper ---
   // A simple token-based auth helper. Token is email address for easy stateless authentication.
   function getAuthUser(req: express.Request): User | null {
@@ -1559,15 +1565,13 @@ async function startServer() {
     }
   });
 
-  // Vite integration
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
+  // The backend serves the API only. In development the frontend runs on its
+  // own Vite dev server (see frontend/) and proxies /api to this backend.
+  // In production, serve the built frontend bundle (frontend/dist).
+  if (process.env.NODE_ENV === "production") {
+    const distPath =
+      process.env.FRONTEND_DIST_DIR ||
+      path.resolve(ROOT_DIR, '..', 'frontend', 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
