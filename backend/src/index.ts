@@ -695,6 +695,132 @@ async function startServer() {
     res.json({ student, evaluation: { score, recommendedLevel, narrative }, report });
   });
 
+  // Upload a baseline answer sheet (ICR-style JSON) for a student and run the
+  // real ai-services evaluation pipeline to place them at an FLN level.
+  //
+  // Body: { classNumber: number, studentName?: string,
+  //         answers: { "Q1": "A", "Q2": "5", ... } }
+  //
+  // The answers are graded against the stored baseline exam key in
+  // ai-services/questions/class_<N>/. The student does NOT need to exist in the
+  // backend DB (the two stores are not yet unified); if the id does match a
+  // stored student, their level/history is updated as a side effect.
+  app.post('/api/students/:id/baseline/submit', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const studentId = req.params.id;
+    const { answers } = req.body || {};
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers) || Object.keys(answers).length === 0) {
+      return res.status(400).json({ error: 'Body must include a non-empty "answers" object, e.g. {"Q1":"A","Q2":"5"}.' });
+    }
+
+    // Resolve class + name: prefer a matching stored student, else the body.
+    const students = await dbStore.getStudents();
+    const existing = students.find(s => s.id === studentId);
+    const classNumber = existing
+      ? (existing.classGroup.match(/\d+/) ? parseInt(existing.classGroup.match(/\d+/)![0], 10) : 1)
+      : parseInt(String(req.body?.classNumber ?? ''), 10);
+    if (!classNumber || Number.isNaN(classNumber)) {
+      return res.status(400).json({ error: 'classNumber is required (1-4) when the student is not in the backend database.' });
+    }
+    const studentName = existing?.name || req.body?.studentName || studentId;
+
+    const dateStr = new Date().toISOString().split('T')[0];
+    const pipelineDir = process.env.AI_SERVICES_DIR || path.resolve(ROOT_DIR, '..', 'ai-services');
+    const responseDir = path.join(pipelineDir, 'student_responses', `class_${classNumber}`, 'phrase_1');
+    fs.mkdirSync(responseDir, { recursive: true });
+
+    // Normalise the flat ICR answers into the pipeline's expected shape.
+    const pipelineAnswers: { [qId: string]: { answer: string; confidence: number } } = {};
+    for (const [qId, val] of Object.entries(answers as Record<string, unknown>)) {
+      pipelineAnswers[qId] = { answer: String(val), confidence: 0.95 };
+    }
+
+    const studentResponse = {
+      student_id: studentId,
+      student_name: studentName,
+      enrolled_class: classNumber,
+      test_date: dateStr,
+      phrase: 'phrase_1',
+      exam_id: `C${classNumber}_WORKSHEET_PHRASE_1`,
+      answers: pipelineAnswers
+    };
+    fs.writeFileSync(path.join(responseDir, `${studentId}.json`), JSON.stringify(studentResponse, null, 2));
+
+    // Run the evaluation pipeline (it has an offline deterministic fallback, so
+    // this works without an LLM API key; a key just improves placement quality).
+    let assignedLevel = 1;
+    let narrative = '';
+    let evaluationData: any = null;
+    try {
+      const { execSync } = await import('child_process');
+      execSync(`python run_pipeline.py ${classNumber} phrase_1 ${studentId}`, {
+        cwd: pipelineDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+
+      const evalReportPath = path.join(pipelineDir, 'evaluation_reports', `class_${classNumber}`, 'phrase_1', 'evaluation', `${studentId}_evaluation_${dateStr}.json`);
+      const reportTxtPath = path.join(pipelineDir, 'evaluation_reports', `class_${classNumber}`, 'phrase_1', 'reports', `${studentId}_report_${dateStr}.txt`);
+
+      if (fs.existsSync(evalReportPath)) {
+        evaluationData = JSON.parse(fs.readFileSync(evalReportPath, 'utf-8'));
+        const levelStr = String(evaluationData.demonstrated_level ?? evaluationData.assigned_level ?? '1');
+        const lvlMatch = levelStr.match(/\d+/);
+        if (lvlMatch) {
+          const matchedNum = parseInt(lvlMatch[0], 10);
+          assignedLevel = levelStr.toLowerCase().includes('class') ? (matchedNum - 1) * 10 + 1 : matchedNum;
+        }
+      }
+      if (fs.existsSync(reportTxtPath)) {
+        narrative = fs.readFileSync(reportTxtPath, 'utf-8');
+      }
+    } catch (pipelineErr: any) {
+      console.error('Baseline evaluation pipeline failed:', pipelineErr?.message || pipelineErr);
+      return res.status(502).json({ error: 'Evaluation pipeline failed. Ensure Python is installed and on PATH.' });
+    }
+
+    assignedLevel = Math.max(1, Math.min(59, assignedLevel));
+
+    // If the student exists in the backend DB, persist the placement.
+    if (existing) {
+      const levelHistory = [...existing.levelHistory, {
+        level: assignedLevel,
+        subLevel: 0,
+        date: dateStr,
+        reason: 'Baseline Answer Sheet Upload'
+      }];
+      await dbStore.updateStudent(existing.id, {
+        currentLevel: assignedLevel,
+        targetLevel: Math.min(59, assignedLevel + 1),
+        levelHistory
+      });
+    }
+
+    await dbStore.addLog({
+      id: 'log_' + Date.now(),
+      timestamp: new Date().toISOString(),
+      schoolId: existing?.schoolId || '',
+      schoolName: 'GPS',
+      userId: user.id,
+      userEmail: user.email,
+      userRole: user.role,
+      activityType: 'scan',
+      status: 'Success',
+      details: `Uploaded baseline sheet for ${studentName} (Class ${classNumber}). Placed at Level ${assignedLevel}`
+    });
+
+    res.json({
+      studentId,
+      studentName,
+      classNumber,
+      assignedLevel,
+      recommendedAction: evaluationData?.recommended_action || evaluationData?.recommendation || null,
+      narrative,
+      evaluation: evaluationData
+    });
+  });
+
   // Generate Personalized Class Worksheets
   app.post('/api/worksheets/generate', async (req, res) => {
     const user = getAuthUser(req);
