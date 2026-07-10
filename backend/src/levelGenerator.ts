@@ -1,4 +1,4 @@
-import { Question } from '../src/types';
+import { Question } from './db';
 
 // Helper to generate a random integer
 function randomVal(min: number, max: number): number {
