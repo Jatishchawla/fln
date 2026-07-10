@@ -510,7 +510,9 @@ async function startServer() {
 
     // Connect to Python Evaluation Metrics Pipeline
     const dateStr = new Date().toISOString().split('T')[0];
-    const pipelineDir = path.join(ROOT_DIR, 'evaluation_metrics');
+    // AI evaluation pipeline lives in the top-level `ai-services/` folder.
+    // Overridable via AI_SERVICES_DIR so the backend can be relocated independently.
+    const pipelineDir = process.env.AI_SERVICES_DIR || path.resolve(ROOT_DIR, '..', 'ai-services');
     const responseDir = path.join(pipelineDir, 'student_responses', `class_${classNumber}`, 'phrase_1');
     fs.mkdirSync(responseDir, { recursive: true });
 
