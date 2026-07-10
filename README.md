@@ -84,13 +84,47 @@ This project is built on the **MERN stack**:
 
 ## Getting Started
 
-> Setup instructions (installation, environment variables, running locally) will be added here as the codebase matures.
+The repo is an **npm-workspaces monorepo** with three units:
+
+```
+fln/
+├── frontend/      # @fln/frontend — React + Vite app
+├── backend/       # @fln/backend  — Node/Express API + Puppeteer PDF generation
+├── ai-services/   # Python evaluation pipeline (Gemini)
+└── docs/          # workflow documentation
+```
+
+### Prerequisites
+- Node.js 20+ and npm 10+
+- Python 3.10+ on your PATH (only needed for the AI evaluation pipeline)
+
+### Install & run
 
 ```bash
 git clone https://github.com/vicharanashala/fln.git
 cd fln
-# setup instructions coming soon
+npm install               # installs both workspaces (frontend + backend)
+
+npm run dev:frontend      # React app on http://localhost:5173
+npm run dev:backend       # API server on http://localhost:3000  (separate terminal)
 ```
+
+Open http://localhost:5173. Log in with a demo account (ask the team for the
+demo password).
+
+### Build
+
+```bash
+npm run build             # builds frontend (Vite) then backend (esbuild)
+npm run lint              # type-check both workspaces
+```
+
+### Environment
+Copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY` for real
+AI calls (each AI path has a non-AI fallback, so the server also runs without it).
+
+> **For contributors:** see [CLAUDE.md](CLAUDE.md) for the current architecture,
+> known issues, and in-progress migration notes before making changes.
 
 ## Contribution Guidelines
 
